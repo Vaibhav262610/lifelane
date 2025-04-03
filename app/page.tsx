@@ -7,6 +7,9 @@ import { EmergencySimulation } from "@/components/emergency-simulation"
 import { RoutePreview } from "@/components/route-preview" 
 import { useEmergencyRoute } from "@/hooks/use-emergency-route"
 import { StartPointMarker } from "@/components/start-point-marker"
+import { AddVehicleModal } from "@/components/add-vehicle-modal"
+import { MultiVehicleDisplay, VehicleStatusIndicator } from "@/components/multi-vehicle-display"
+import { VehicleManager, Vehicle as VehicleType } from "@/services/vehicle-manager"
 
 export default function Home() {
   const [destination, setDestination] = useState("")
@@ -69,6 +72,21 @@ export default function Home() {
   const [optimizedEstimatedTime, setOptimizedEstimatedTime] = useState<number | null>(null);
   const [hasReachedDestination, setHasReachedDestination] = useState(false);
   const [showReachedMessage, setShowReachedMessage] = useState(false);
+
+  const [isAddVehicleModalOpen, setIsAddVehicleModalOpen] = useState(false);
+  const [additionalVehicles, setAdditionalVehicles] = useState<VehicleType[]>([]);
+  const [vehicleManager] = useState<VehicleManager>(() => new VehicleManager());
+  const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
+  const [isMapViewFreezed, setIsMapViewFreezed] = useState(false);
+  
+  // Traffic light management - restored
+  const [trafficLights, setTrafficLights] = useState<Array<{
+    id: string;
+    position: google.maps.LatLngLiteral;
+    status: "red" | "yellow" | "green";
+    lastChanged: number;
+    cycleTime: number;
+  }>>([]);
 
   // Function to speak navigation instructions using the Web Speech API
   const speakInstruction = (instruction: string) => {
@@ -184,6 +202,28 @@ export default function Home() {
     }));
   };
 
+  // Audio element for bell sound
+  useEffect(() => {
+    // No need to try to load a non-existent file
+    // Just create the audio object when needed
+    return () => {
+      // Clean up
+      delete (window as any).bellSound;
+    };
+  }, []);
+
+  // Function to play bell sound
+  const playBellSound = () => {
+    try {
+      // Create a new audio instance each time to allow overlapping sounds
+      const audio = new Audio('https://www.soundjay.com/misc/sounds/bell-ringing-01.mp3');
+      audio.volume = 0.5; // Set volume to 50%
+      audio.play().catch(err => console.error("Error playing sound:", err));
+    } catch (err) {
+      console.error("Error setting up sound:", err);
+    }
+  };
+
   // Simple animation function that moves the start point along the route
   const animateMarkerAlongRoute = (
     start: google.maps.LatLngLiteral,
@@ -195,6 +235,9 @@ export default function Home() {
     if (animationInterval) {
       clearInterval(animationInterval);
     }
+    
+    // Reset passed traffic lights
+    passedTrafficLightsRef.current = new Set();
     
     // Create a simple route if we don't have one
     if (routePointsRef.current.length < 2) {
@@ -211,29 +254,48 @@ export default function Home() {
       console.log("Created simple route with", points.length, "points");
     }
     
+    // Generate traffic lights along the route
+    const lights = generateTrafficLights(routePointsRef.current);
+    setTrafficLights(lights);
+    console.log("Generated", lights.length, "traffic lights along the route");
+    
+    // Force re-render with delay to ensure traffic lights are created
+    setTimeout(() => {
+      console.log("Forcing traffic light update");
+      setTrafficLights([...lights]);
+    }, 500);
+    
     setAnimationProgress(0);
     
     // Initialize the vehicle position reference
     vehiclePositionRef.current = start;
     
     // Only set the map view once at the beginning to show both start and destination
-    if (window.googleMap) {
+    if (window.googleMap && !isMapViewFreezed) {
       // Create a bounds object that includes both start and destination
       const bounds = new window.google.maps.LatLngBounds();
       bounds.extend(new window.google.maps.LatLng(start.lat, start.lng));
       bounds.extend(new window.google.maps.LatLng(destination.lat, destination.lng));
+      
+      // Also include all traffic lights
+      lights.forEach(light => {
+        bounds.extend(new window.google.maps.LatLng(light.position.lat, light.position.lng));
+      });
       
       // Fit the map to these bounds with less padding for tighter zoom
       window.googleMap.fitBounds(bounds, 20); // Reduced padding from 100 to 20
       
       // After fitting bounds, zoom in a bit more for better visibility
       setTimeout(() => {
-        if (window.googleMap) {
+        if (window.googleMap && !isMapViewFreezed) {
           const currentZoom = window.googleMap.getZoom() || 15;
           // Increase zoom level by 1 to get closer
           window.googleMap.setZoom(currentZoom + 1);
+          console.log("Increased zoom level for better traffic light visibility");
         }
       }, 500);
+      
+      console.log("Set closer map view to show traffic lights more clearly");
     }
     
     // Calculate random duration between 30-60 seconds for more realistic emergency response
@@ -424,6 +486,30 @@ export default function Home() {
         // Properly stop simulation
         setIsSimulationRunning(false);
       }
+      
+      // When checking if we're near traffic lights:
+      // Check for traffic lights that were passed
+      if (vehiclePositionRef.current) {
+        trafficLights.forEach(light => {
+          // If we haven't passed this light yet
+          if (!passedTrafficLightsRef.current.has(light.id)) {
+            // Calculate distance to the traffic light
+            const distanceToLight = calculateDistance(vehiclePositionRef.current!, light.position);
+            
+            // If we're very close to the traffic light (within 50 meters)
+            if (distanceToLight < 0.05) {
+              console.log(`Passing traffic light ${light.id}`);
+              // Play bell sound
+              playBellSound();
+              // Mark this light as passed
+              passedTrafficLightsRef.current.add(light.id);
+            }
+          }
+        });
+      }
+      
+      // Update traffic lights based on new vehicle position
+      updateTrafficLights();
     }, updateIntervalMs);
     
     setAnimationInterval(interval);
@@ -452,7 +538,7 @@ export default function Home() {
     currentSpeed?: number;
   }>({});
 
-  // Updated handleStartSimulation to extract direction steps
+  // Updated handleStartSimulation to freeze map view
   const handleStartSimulation = (
     startPointInput: string, 
     dest: string, 
@@ -475,95 +561,99 @@ export default function Home() {
     const destination = parseCoordinates(dest);
     
     // Only proceed if we have valid coordinates
-    if (start && destination) {
-      console.log("Starting animation with coordinates:", { start, destination });
-      
-      // Store route points from Google Directions API
-      // This would be populated by the RoutePreview component
-      if (window.googleMap && window.google) {
-        const directionsService = new window.google.maps.DirectionsService();
-        
-        directionsService.route(
-          {
-            origin: start,
-            destination: destination,
-            travelMode: window.google.maps.TravelMode.DRIVING,
-          },
-          (response, status) => {
-            if (status === window.google.maps.DirectionsStatus.OK && response) {
-              // Extract route points
-              const points: google.maps.LatLngLiteral[] = [];
-              const route = response.routes[0];
-              const path = route.overview_path;
-              
-              // Convert Google's LatLng objects to LatLngLiteral
-              path.forEach(point => {
-                points.push({
-                  lat: point.lat(),
-                  lng: point.lng(),
-                });
-              });
-              
-              routePointsRef.current = points;
-              console.log("Got actual route with", points.length, "points");
-              
-              // Extract direction steps
-              const steps = extractDirectionSteps(response);
-              setDirectionSteps(steps);
-              setCurrentStepIndex(0);
-              console.log("Extracted direction steps:", steps);
-              
-              // Calculate and set estimated times
-              const times = calculateEstimatedTimes(response);
-              setNormalEstimatedTime(times.normal);
-              setOptimizedEstimatedTime(times.optimized);
-              
-              // Speak ONLY the starting announcement, not the first instruction
-              speakInstruction("Starting emergency route guidance.");
-              
-              // Start the animation
-              animateMarkerAlongRoute(start, destination);
-              
-              // Update UI state
-              setIsSimulationRunning(true);
-              setIsRoutePreviewActive(true); // Keep route visible
-              
-              // Set route info for the control panel
-              setRouteInfo({
-                steps: steps,
-                currentStepIndex: 0,
-                normalEstimatedTime: times.normal,
-                optimizedEstimatedTime: times.optimized,
-                hasReachedDestination: false
-              });
-            } else {
-              console.error("Could not get directions, using simple route");
-              routePointsRef.current = [];
-              setDirectionSteps([]);
-              setNormalEstimatedTime(null);
-              setOptimizedEstimatedTime(null);
-              animateMarkerAlongRoute(start, destination);
-              
-              setIsSimulationRunning(true);
-              setIsRoutePreviewActive(true);
-            }
-          }
-        );
-      } else {
-        // Fallback for when Google Maps is not available
-        console.log("Google Maps not available, using simple route");
-        routePointsRef.current = [];
-        setDirectionSteps([]);
-        setNormalEstimatedTime(null);
-        setOptimizedEstimatedTime(null);
-        animateMarkerAlongRoute(start, destination);
-        
-        setIsSimulationRunning(true);
-        setIsRoutePreviewActive(true);
-      }
-    } else {
+    if (!start || !destination) {
       console.error("Could not start animation: invalid coordinates", { start, destination });
       alert("Please enter valid coordinates for both start and destination points.");
+      return;
+    }
+    
+    console.log("Starting animation with coordinates:", { start, destination });
+    
+    // Freeze map view during simulation if needed
+    setIsMapViewFreezed(true);
+       
+    // Store route points from Google Directions API
+    // This would be populated by the RoutePreview component
+    if (window.googleMap && window.google) {
+      const directionsService = new window.google.maps.DirectionsService();
+      
+      directionsService.route(
+        {
+          origin: start,
+          destination: destination,
+          travelMode: window.google.maps.TravelMode.DRIVING,
+        },
+        (response, status) => {
+          if (status === window.google.maps.DirectionsStatus.OK && response) {
+            // Extract route points
+            const points: google.maps.LatLngLiteral[] = [];
+            const route = response.routes[0];
+            const path = route.overview_path;
+            
+            // Convert Google's LatLng objects to LatLngLiteral
+            path.forEach(point => {
+              points.push({
+                lat: point.lat(),
+                lng: point.lng(),
+              });
+            });
+            
+            routePointsRef.current = points;
+            console.log("Got actual route with", points.length, "points");
+            
+            // Extract direction steps
+            const steps = extractDirectionSteps(response);
+            setDirectionSteps(steps);
+            setCurrentStepIndex(0);
+            console.log("Extracted direction steps:", steps);
+            
+            // Calculate and set estimated times
+            const times = calculateEstimatedTimes(response);
+            setNormalEstimatedTime(times.normal);
+            setOptimizedEstimatedTime(times.optimized);
+            
+            // Speak ONLY the starting announcement, not the first instruction
+            speakInstruction("Starting emergency route guidance.");
+            
+            // Start the animation
+            animateMarkerAlongRoute(start, destination);
+            
+            // Update UI state
+            setIsSimulationRunning(true);
+            setIsRoutePreviewActive(true); // Keep route visible
+            
+            // Set route info for the control panel
+            setRouteInfo({
+              steps: steps,
+              currentStepIndex: 0,
+              normalEstimatedTime: times.normal,
+              optimizedEstimatedTime: times.optimized,
+              hasReachedDestination: false
+            });
+          } else {
+            console.error("Could not get directions, using simple route");
+            routePointsRef.current = [];
+            setDirectionSteps([]);
+            setNormalEstimatedTime(null);
+            setOptimizedEstimatedTime(null);
+            animateMarkerAlongRoute(start, destination);
+            
+            setIsSimulationRunning(true);
+            setIsRoutePreviewActive(true);
+          }
+        }
+      );
+    } else {
+      // Fallback for when Google Maps is not available
+      console.log("Google Maps not available, using simple route");
+      routePointsRef.current = [];
+      setDirectionSteps([]);
+      setNormalEstimatedTime(null);
+      setOptimizedEstimatedTime(null);
+      animateMarkerAlongRoute(start, destination);
+      
+      setIsSimulationRunning(true);
+      setIsRoutePreviewActive(true);
     }
   }
   
@@ -591,35 +681,226 @@ export default function Home() {
     setAnimationProgress(0);
     // Keep the start coordinates but clear destination
     setDestCoords(undefined);
+    
+    // Clear additional vehicles
+    vehicleManager.clearAll();
+    setAdditionalVehicles([]);
+    setSelectedVehicleId(null);
   }
 
+  // Updated handleAddAmbulance to open the modal
   const handleAddAmbulance = () => {
-    addAmbulance()
+    setIsAddVehicleModalOpen(true);
   }
 
-  const toggleDarkMode = () => {
-    setIsDarkMode(!isDarkMode)
+  // Function to handle adding a new vehicle
+  const handleAddVehicle = (startPoint: string, destination: string, vehicleType: 'ambulance' | 'fire') => {
+    console.log("Adding additional vehicle:", { startPoint, destination, vehicleType });
+    
+    // Parse coordinates
+    const startCoords = parseCoordinates(startPoint);
+    const destCoords = parseCoordinates(destination);
+    
+    if (!startCoords || !destCoords) {
+      alert("Invalid coordinates for new vehicle. Please enter valid lat,lng values.");
+      return;
+    }
+    
+    // Get route using Google Maps Directions API
+    if (window.googleMap && window.google) {
+      const directionsService = new window.google.maps.DirectionsService();
+      
+      directionsService.route(
+        {
+          origin: startCoords,
+          destination: destCoords,
+          travelMode: window.google.maps.TravelMode.DRIVING,
+        },
+        (response, status) => {
+          if (status === window.google.maps.DirectionsStatus.OK && response) {
+            // Extract route points
+            const points: google.maps.LatLngLiteral[] = [];
+            const route = response.routes[0];
+            const path = route.overview_path;
+            
+            // Convert Google's LatLng objects to LatLngLiteral
+            path.forEach(point => {
+              points.push({
+                lat: point.lat(),
+                lng: point.lng(),
+              });
+            });
+            
+            // Extract direction steps
+            const steps = extractDirectionSteps(response);
+            
+            // Add vehicle to manager
+            const vehicleId = vehicleManager.addVehicle(
+              vehicleType, 
+              startCoords, 
+              destCoords, 
+              points,
+              steps
+            );
+            
+            // Start the vehicle animation
+            animateAdditionalVehicle(vehicleId);
+            
+            // Add to our UI state
+            const vehicle = vehicleManager.getVehicle(vehicleId);
+            if (vehicle) {
+              setAdditionalVehicles(prev => [...prev, vehicle]);
+              setSelectedVehicleId(vehicleId);
+              
+              // Ensure map shows all vehicles
+              updateMapBoundsForAllVehicles();
+            }
+          } else {
+            console.error("Could not get directions for additional vehicle");
+            alert("Could not calculate route for new vehicle. Please try different coordinates.");
+          }
+        }
+      );
+    } else {
+      alert("Google Maps is not available. Please try again later.");
+    }
   }
+  
+  // Function to animate additional vehicles
+  const animateAdditionalVehicle = (vehicleId: string) => {
+    const vehicle = vehicleManager.getVehicle(vehicleId);
+    if (!vehicle || vehicle.route.length < 2) return;
+    
+    console.log(`Starting animation for additional vehicle ${vehicleId}`);
+    
+    // Calculate random duration between 30-60 seconds
+    const minDuration = 30;
+    const maxDuration = 60;
+    const randomDuration = Math.floor(Math.random() * (maxDuration - minDuration + 1)) + minDuration;
+    const totalDurationMs = randomDuration * 1000;
+    
+    // Update animation variables
+    const updateIntervalMs = 200; // 200ms
+    const totalSteps = totalDurationMs / updateIntervalMs;
+    let currentStep = 0;
+    
+    const interval = setInterval(() => {
+      currentStep++;
+      
+      // Calculate progress as a fraction from 0 to 1
+      const progress = Math.min(currentStep / totalSteps, 1);
+      
+      // If we have route points, interpolate between them
+      if (vehicle.route.length > 1) {
+        const routeIndex = Math.min(
+          Math.floor(progress * (vehicle.route.length - 1)),
+          vehicle.route.length - 2
+        );
+        
+        const currentPoint = vehicle.route[routeIndex];
+        const nextPoint = vehicle.route[routeIndex + 1];
+        const subProgress = (progress * (vehicle.route.length - 1)) - routeIndex;
+        
+        // Interpolate between current and next point
+        const newPosition = {
+          lat: currentPoint.lat + (nextPoint.lat - currentPoint.lat) * subProgress,
+          lng: currentPoint.lng + (nextPoint.lng - currentPoint.lng) * subProgress,
+        };
+        
+        // Update vehicle position
+        vehicleManager.updateVehiclePosition(
+          vehicleId, 
+          newPosition, 
+          progress * 100,
+          Math.floor(progress * vehicle.steps.length)
+        );
+        
+        // Check if any waiting vehicles can resume
+        vehicleManager.checkAndResumeWaitingVehicles();
+        
+        // Try to return to original route if on alternate
+        vehicleManager.returnToOriginalRoute(vehicleId);
+        
+        // Update our UI state with the latest vehicles
+        setAdditionalVehicles([...vehicleManager.getAllVehicles()]);
+      }
+      
+      // If we're done, clean up
+      if (progress >= 1) {
+        clearInterval(interval);
+        console.log(`Animation complete for vehicle ${vehicleId}`);
+        
+        // Update final state
+        vehicleManager.updateVehiclePosition(
+          vehicleId,
+          vehicle.destination,
+          100,
+          vehicle.steps.length - 1
+        );
+        
+        // Update our UI state
+        setAdditionalVehicles([...vehicleManager.getAllVehicles()]);
+      }
+    }, updateIntervalMs);
+  }
+  
+  // Function to update map bounds to show all vehicles
+  const updateMapBoundsForAllVehicles = () => {
+    if (!window.googleMap || isMapViewFreezed) return;
+    
+    const bounds = new window.google.maps.LatLngBounds();
+    
+    // Add main vehicle if active
+    if (startCoords) {
+      bounds.extend(new window.google.maps.LatLng(startCoords.lat, startCoords.lng));
+    }
+    
+    if (destCoords) {
+      bounds.extend(new window.google.maps.LatLng(destCoords.lat, destCoords.lng));
+    }
+    
+    // Add all additional vehicles
+    vehicleManager.getAllVehicles().forEach(vehicle => {
+      bounds.extend(new window.google.maps.LatLng(
+        vehicle.currentPosition.lat, 
+        vehicle.currentPosition.lng
+      ));
+      
+      bounds.extend(new window.google.maps.LatLng(
+        vehicle.destination.lat, 
+        vehicle.destination.lng
+      ));
+    });
+    
+    // Fit map to bounds
+    window.googleMap.fitBounds(bounds, 50);
+  }
+  
+  // Select a vehicle to focus on
+  const handleSelectVehicle = (vehicleId: string) => {
+    setSelectedVehicleId(vehicleId);
+    
+    const vehicle = vehicleManager.getVehicle(vehicleId);
+    if (vehicle && window.googleMap) {
+      // Center map on selected vehicle
+      window.googleMap.panTo(vehicle.currentPosition);
+      window.googleMap.setZoom(15); // Closer zoom
+    }
+  }
+  
+  // Add cleanup for vehicle animations on unmount
+  useEffect(() => {
+    return () => {
+      vehicleManager.clearAll();
+    };
+  }, []);
 
-  // Helper function to calculate distance between two points in kilometers
-  const calculateDistance = (
-    point1: google.maps.LatLngLiteral,
-    point2: google.maps.LatLngLiteral
-  ): number => {
-    const R = 6371; // Earth's radius in km
-    const dLat = ((point2.lat - point1.lat) * Math.PI) / 180;
-    const dLng = ((point2.lng - point1.lng) * Math.PI) / 180;
-    
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos((point1.lat * Math.PI) / 180) *
-        Math.cos((point2.lat * Math.PI) / 180) *
-        Math.sin(dLng / 2) *
-        Math.sin(dLng / 2);
-    
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c; // Distance in km
-  };
+  // In the render method, convert string[] alerts to {title, message}[] alerts
+  // Fix for the alerts type error
+  const formattedAlerts = alerts.map(alert => ({ 
+    title: "System Alert", 
+    message: alert 
+  }));
 
   // Add a diagnostics effect to log updates to help debug
   useEffect(() => {
@@ -712,12 +993,126 @@ export default function Home() {
     }
   }, [isSimulationRunning, animationProgress, routeInfo?.steps?.length]);
   
-  // In the render method, convert string[] alerts to {title, message}[] alerts
-  // Fix for the alerts type error
-  const formattedAlerts = alerts.map(alert => ({ 
-    title: "System Alert", 
-    message: alert 
-  }));
+  // Helper function to calculate distance between two points in kilometers
+  const calculateDistance = (
+    point1: google.maps.LatLngLiteral,
+    point2: google.maps.LatLngLiteral
+  ): number => {
+    const R = 6371; // Earth's radius in km
+    const dLat = ((point2.lat - point1.lat) * Math.PI) / 180;
+    const dLng = ((point2.lng - point1.lng) * Math.PI) / 180;
+    
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos((point1.lat * Math.PI) / 180) *
+        Math.cos((point2.lat * Math.PI) / 180) *
+        Math.sin(dLng / 2) *
+        Math.sin(dLng / 2);
+    
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c; // Distance in km
+  };
+
+  const toggleDarkMode = () => {
+    setIsDarkMode(!isDarkMode)
+  }
+
+  // Add button to toggle map view freezing
+  const toggleMapViewFreeze = () => {
+    setIsMapViewFreezed(!isMapViewFreezed);
+  }
+
+  // Generate traffic lights along the route with random initial states
+  const generateTrafficLights = (routePoints: google.maps.LatLngLiteral[]) => {
+    if (routePoints.length < 4) {
+      console.log("Not enough route points to create traffic lights");
+      return [];
+    }
+    
+    const lights = [];
+    // Place lights at regular intervals, but not at the very start or end
+    const interval = Math.max(1, Math.floor(routePoints.length / 5)); // More frequent traffic lights
+    
+    console.log(`Generating traffic lights with interval ${interval} for ${routePoints.length} points`);
+    
+    // Possible traffic light states to simulate normal traffic
+    const possibleStates = ["red", "yellow", "green"] as const;
+    
+    for (let i = interval; i < routePoints.length - interval; i += interval) {
+      // Add a small offset to position lights slightly to the side of the road
+      const offset = 0.0005; // Increased geographical offset for better visibility
+      const position = {
+        lat: routePoints[i].lat + (Math.random() > 0.5 ? offset : -offset),
+        lng: routePoints[i].lng + (Math.random() > 0.5 ? offset : -offset),
+      };
+      
+      // Randomly select an initial state to simulate realistic traffic
+      const randomState = possibleStates[Math.floor(Math.random() * possibleStates.length)];
+      
+      const light = {
+        id: `light-${i}`,
+        position: position,
+        status: randomState,
+        lastChanged: Date.now(), // Track when this light last changed state
+        cycleTime: 5000 + Math.floor(Math.random() * 5000), // Random cycle time (5-10 seconds)
+      };
+      
+      lights.push(light);
+      console.log(`Created traffic light at position:`, position, `with initial state:`, randomState);
+    }
+    
+    console.log(`Generated ${lights.length} traffic lights along the route`);
+    return lights;
+  };
+
+  // Update traffic light status based on vehicle position and simulate regular traffic changes
+  const updateTrafficLights = () => {
+    if (!vehiclePositionRef.current) return;
+    
+    const now = Date.now();
+    
+    setTrafficLights(prevLights => {
+      return prevLights.map(light => {
+        // Calculate distance from vehicle to this light
+        const distance = calculateDistance(
+          vehiclePositionRef.current!,
+          light.position
+        );
+        
+        // First determine if this light would normally change based on its cycle time
+        const timeSinceLastChange = now - (light.lastChanged || now);
+        const shouldChangeCycle = timeSinceLastChange > (light.cycleTime || 8000);
+        
+        // Determine status based on emergency vehicle distance (priority) or normal cycle
+        let newStatus = light.status;
+        
+        // Emergency vehicle has priority within 500 meters
+        if (distance < 0.5) {
+          newStatus = "green";
+        } else if (distance < 1.0) {
+          newStatus = "yellow";
+        } else if (shouldChangeCycle) {
+          // Normal traffic light cycle if outside emergency vehicle's influence
+          // Cycle: red -> green -> yellow -> red
+          if (light.status === "red") newStatus = "green";
+          else if (light.status === "green") newStatus = "yellow";
+          else if (light.status === "yellow") newStatus = "red";
+        }
+        
+        // Only update lastChanged if the state actually changed
+        const lastChanged = light.status !== newStatus ? now : (light.lastChanged || now);
+        
+        return {
+          ...light,
+          status: newStatus,
+          lastChanged: lastChanged,
+        };
+      });
+    });
+  };
+
+  // Track passed traffic lights to avoid playing sound multiple times
+  const passedTrafficLightsRef = useRef<Set<string>>(new Set());
 
   return (
     <main className={`flex min-h-screen flex-col ${isDarkMode ? "bg-gray-900 text-gray-100" : ""}`}>
@@ -734,14 +1129,14 @@ export default function Home() {
           directions={directions}
           alerts={formattedAlerts}
           onAddAmbulance={handleAddAmbulance}
-          ambulanceCount={vehicles.length}
+          ambulanceCount={vehicles.length + additionalVehicles.length}
           isDarkMode={isDarkMode}
           onToggleDarkMode={toggleDarkMode}
           routeInfo={routeInfo}
         />
         <div className="relative flex-1">
           <MapContainer isDarkMode={isDarkMode}>
-            {/* Always show RoutePreview when we have coordinates */}
+            {/* Primary route preview */}
             {startCoords && destCoords && (
               <RoutePreview 
                 startPoint={startCoords} 
@@ -749,13 +1144,62 @@ export default function Home() {
                 isSimulationActive={isSimulationRunning || animationInterval !== null}
                 isManuallyEnteredStart={isManuallyEnteredStart}
                 vehicleType={vehicleType}
+                trafficLights={trafficLights}
               />
             )}
+            
+            {/* Multiple vehicles display */}
+            <MultiVehicleDisplay 
+              vehicles={additionalVehicles} 
+              isDarkMode={isDarkMode} 
+              selectedVehicleId={selectedVehicleId}
+              onSelectVehicle={handleSelectVehicle}
+            />
+            
             {/* Emergency simulation when running - always render this component */}
             {isSimulationRunning && (
               <EmergencySimulation />
             )}
           </MapContainer>
+
+          {/* Display selected vehicle status if any is selected */}
+          {selectedVehicleId && additionalVehicles.length > 0 && (
+            <VehicleStatusIndicator 
+              vehicle={additionalVehicles.find(v => v.id === selectedVehicleId)!} 
+              isDarkMode={isDarkMode}
+            />
+          )}
+
+          {/* Vehicle selector - shown when multiple vehicles are present */}
+          {additionalVehicles.length > 0 && (
+            <div className={`absolute top-20 left-4 z-20 p-2 rounded-lg shadow-lg ${isDarkMode ? "bg-gray-800 text-white" : "bg-white"}`}>
+              <div className="text-sm font-semibold mb-2">Vehicles</div>
+              <div className="space-y-1 max-h-40 overflow-y-auto">
+                {additionalVehicles.map(vehicle => (
+                  <button
+                    key={vehicle.id}
+                    onClick={() => handleSelectVehicle(vehicle.id)}
+                    className={`w-full text-left px-2 py-1 text-xs rounded flex items-center ${
+                      selectedVehicleId === vehicle.id 
+                        ? isDarkMode ? 'bg-blue-800' : 'bg-blue-100'
+                        : isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'
+                    }`}
+                  >
+                    <div 
+                      className={`w-2 h-2 rounded-full mr-2 ${
+                        vehicle.status === 'waiting' ? 'bg-yellow-500' :
+                        vehicle.status === 'completed' ? 'bg-green-500' :
+                        vehicle.conflictDetected ? 'bg-red-500' : 'bg-blue-500'
+                      }`}
+                    ></div>
+                    <span>
+                      {vehicle.type.charAt(0).toUpperCase() + vehicle.type.slice(1)} {vehicle.id.substring(0, 4)}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Top-right corner navigation instructions - Only show when vehicle has NOT reached destination */}
           {(isSimulationRunning || animationInterval) && 
@@ -830,6 +1274,14 @@ export default function Home() {
                       {vehicleType === 'ambulance' ? 'Ambulance' : 'Fire Truck'}
                     </span>
                   )}
+                  
+                  {additionalVehicles.length > 0 && (
+                    <span className={`ml-2 px-2 py-0.5 text-xs rounded-full ${
+                      isDarkMode ? 'bg-blue-900 text-blue-100' : 'bg-blue-100 text-blue-800'
+                    }`}>
+                      +{additionalVehicles.length} additional {additionalVehicles.length === 1 ? 'vehicle' : 'vehicles'}
+                    </span>
+                  )}
                 </div>
                 <div className={`text-sm ${isDarkMode ? "text-gray-300" : "text-gray-600"}`}>
                   {animationProgress.toFixed(0)}% Complete
@@ -856,8 +1308,29 @@ export default function Home() {
               )}
             </div>
           )}
+
+          {/* Map control toggle button */}
+          {(isSimulationRunning || additionalVehicles.length > 0) && (
+            <button
+              onClick={toggleMapViewFreeze}
+              className={`absolute right-4 bottom-20 z-20 px-3 py-2 rounded-md shadow-lg text-sm ${
+                isDarkMode 
+                  ? isMapViewFreezed ? 'bg-blue-800 text-white' : 'bg-gray-700 text-white'
+                  : isMapViewFreezed ? 'bg-blue-100 text-blue-800' : 'bg-white text-gray-800'
+              }`}
+            >
+              {isMapViewFreezed ? 'Free Map Movement' : 'Lock Map View'}
+            </button>
+          )}
         </div>
       </div>
+      
+      {/* Add Vehicle Modal */}
+      <AddVehicleModal 
+        isOpen={isAddVehicleModalOpen}
+        onClose={() => setIsAddVehicleModalOpen(false)}
+        onAddVehicle={handleAddVehicle}
+      />
     </main>
   )
 }
