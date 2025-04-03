@@ -26,11 +26,16 @@ interface ControlPanelProps {
   isDarkMode: boolean
   onToggleDarkMode: () => void
   routeInfo?: {
-    distance: number
-    duration: number
-    remainingDistance: number
-    remainingDuration: number
-    savedTime: number
+    steps?: Array<{
+      instruction: string;
+      distance: string;
+      maneuver?: string;
+      completed: boolean;
+    }>;
+    currentStepIndex?: number;
+    normalEstimatedTime?: number | null;
+    optimizedEstimatedTime?: number | null;
+    hasReachedDestination?: boolean;
   }
 }
 
@@ -67,11 +72,10 @@ export function ControlPanel({
   const [emergencyType, setEmergencyType] = useState("ambulance")
   const [selectedStartLocation, setSelectedStartLocation] = useState("")
   const [selectedDestLocation, setSelectedDestLocation] = useState("")
+  const [isNarratorEnabled, setIsNarratorEnabled] = useState(true)
 
   // Connect the narrator switch to the actual narrator functionality
   // Add this to the component
-
-  const [isNarratorEnabled, setIsNarratorEnabled] = useState(false)
 
   // Add a function to handle narrator toggle
   const handleNarratorToggle = (checked: boolean) => {
@@ -148,12 +152,29 @@ export function ControlPanel({
   }
 
   // Format time in minutes and seconds
-  const formatTime = (seconds: number): string => {
+  const formatTime = (seconds: number | null | undefined): string => {
+    if (!seconds) return "N/A";
     const minutes = Math.floor(seconds / 60)
     const remainingSeconds = Math.floor(seconds % 60)
     return `${minutes}m ${remainingSeconds}s`
   }
 
+  // Auto-switch to directions tab after starting simulation
+  useEffect(() => {
+    if (isSimulationRunning) {
+      const tabsElement = document.querySelector('[role="tablist"]')
+      if (tabsElement) {
+        const directionsTab = tabsElement.querySelector('[value="directions"]') as HTMLElement
+        if (directionsTab) {
+          setTimeout(() => {
+            directionsTab.click()
+          }, 500)
+        }
+      }
+    }
+  }, [isSimulationRunning]);
+
+  // Update tabs content for directions and alerts
   return (
     <div className={`w-96 border-r ${isDarkMode ? "bg-gray-900 text-gray-100" : "bg-background"} p-4 overflow-y-auto`}>
       <div className="mb-4 flex items-center justify-between">
@@ -443,59 +464,137 @@ export function ControlPanel({
 
         <TabsContent value="directions">
           <Card className={isDarkMode ? "bg-gray-800 border-gray-700" : ""}>
-            <CardHeader>
-              <CardTitle>Turn-by-Turn Directions</CardTitle>
+            <CardHeader className={isDarkMode ? "text-white" : ""}>
+              <CardTitle>Navigation Instructions</CardTitle>
               <CardDescription className={isDarkMode ? "text-gray-400" : ""}>
-                Navigation instructions for emergency vehicle
+                Turn-by-turn directions and alerts
               </CardDescription>
+              
+              {/* Voice Narrator Toggle */}
+              <div className="flex items-center space-x-2 mt-2">
+                <Switch 
+                  id="narrator-mode" 
+                  checked={isNarratorEnabled}
+                  onCheckedChange={setIsNarratorEnabled}
+                />
+                <Label htmlFor="narrator-mode">Voice Narrator</Label>
+              </div>
+              
+              {/* Time comparison section */}
+              {routeInfo?.normalEstimatedTime && routeInfo?.optimizedEstimatedTime && (
+                <div className="mt-4 bg-blue-900 p-3 rounded-md">
+                  <h3 className="text-white font-medium">Estimated Time Comparison</h3>
+                  <div className="grid grid-cols-2 gap-2 mt-2">
+                    <div className="bg-red-700 p-2 rounded">
+                      <div className="text-xs text-gray-200">Without System</div>
+                      <div className="text-white font-bold">
+                        {formatTime(routeInfo.normalEstimatedTime)}
+                      </div>
+                    </div>
+                    <div className="bg-green-700 p-2 rounded">
+                      <div className="text-xs text-gray-200">With System</div>
+                      <div className="text-white font-bold">
+                        {formatTime(routeInfo.optimizedEstimatedTime)}
+                      </div>
+                    </div>
+                  </div>
+                  {routeInfo.normalEstimatedTime && routeInfo.optimizedEstimatedTime && (
+                    <div className="mt-2 text-green-300 text-sm font-medium text-center">
+                      Time Saved: {formatTime(routeInfo.normalEstimatedTime - routeInfo.optimizedEstimatedTime)}
+                    </div>
+                  )}
+                </div>
+              )}
+              
+              {/* Destination reached message */}
+              {routeInfo?.hasReachedDestination && (
+                <div className="mt-3 bg-green-700 p-3 rounded-md text-white font-bold text-center">
+                  Destination Reached!
+                </div>
+              )}
             </CardHeader>
-            <CardContent>
-              {directions.length > 0 ? (
-                <div className="space-y-2 max-h-[300px] overflow-y-auto">
-                  {directions.map((direction, index) => (
-                    <div
-                      key={index}
-                      className={`p-2 border rounded-md ${index === 0 ? "border-[#0f53ff] bg-[#0f53ff10]" : ""}`}
+            
+            <CardContent className="max-h-96 overflow-y-auto">
+              {/* Navigation Steps */}
+              {routeInfo?.steps && routeInfo.steps.length > 0 ? (
+                <div className="space-y-2">
+                  {routeInfo.steps.map((step, index) => (
+                    <div 
+                      key={index} 
+                      className={`p-2 rounded ${
+                        index === routeInfo.currentStepIndex 
+                          ? "bg-blue-600 text-white" 
+                          : step.completed 
+                            ? "text-gray-500 line-through" 
+                            : isDarkMode ? "bg-gray-700" : "bg-gray-100"
+                      }`}
                     >
-                      <p className="text-sm">{direction}</p>
+                      <div className="flex items-start">
+                        <div className="mr-2 mt-1">
+                          {index === routeInfo.currentStepIndex ? (
+                            <span className="inline-block bg-white text-blue-600 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center">
+                              {index + 1}
+                            </span>
+                          ) : (
+                            <span className="inline-block bg-gray-300 text-gray-600 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center">
+                              {index + 1}
+                            </span>
+                          )}
+                        </div>
+                        <div>
+                          <div className="text-sm">{step.instruction}</div>
+                          <div className="text-xs opacity-70">{step.distance}</div>
+                        </div>
+                      </div>
                     </div>
                   ))}
                 </div>
+              ) : isSimulationRunning ? (
+                <div className="flex items-center justify-center h-32">
+                  <div className="text-center">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
+                    <p className="mt-2">Loading directions...</p>
+                  </div>
+                </div>
               ) : (
-                <div className="p-4 text-center text-muted-foreground">
-                  <p>No active route</p>
+                <div className="p-4 text-center text-gray-500">
+                  <MapPin className="mx-auto h-8 w-8 mb-2" />
+                  <p>Start a route to see directions</p>
                 </div>
               )}
-
-              <div className="mt-4">
-                <h3 className="text-sm font-medium mb-2 flex items-center">
-                  <AlertTriangle className="h-4 w-4 mr-1 text-yellow-500" />
-                  Alerts
-                </h3>
-                {alerts.length > 0 ? (
-                  <div className="space-y-2 max-h-[200px] overflow-y-auto">
+                
+              {/* Emergency Alerts */}
+              {alerts.length > 0 && (
+                <div className="mt-4">
+                  <h3 className={`font-medium mb-2 ${isDarkMode ? "text-white" : ""}`}>
+                    <AlertTriangle className="h-4 w-4 inline mr-1" /> Alerts
+                  </h3>
+                  <div className="space-y-2">
                     {alerts.map((alert, index) => (
-                      <div
-                        key={index}
-                        className={`p-2 border rounded-md ${isDarkMode ? "bg-yellow-900/30 border-yellow-800" : "bg-yellow-50"} ${index === 0 ? "border-[#0f53ff]" : ""}`}
+                      <div 
+                        key={index} 
+                        className={`p-2 rounded ${isDarkMode ? "bg-red-900" : "bg-red-100"}`}
                       >
-                        <p className={`text-sm ${isDarkMode ? "text-yellow-300" : "text-yellow-800"}`}>{alert}</p>
+                        <p className={isDarkMode ? "text-red-100 text-sm" : "text-red-700 text-sm"}>
+                          {alert}
+                        </p>
                       </div>
                     ))}
                   </div>
-                ) : (
-                  <div className="p-2 text-center text-muted-foreground">
-                    <p>No alerts</p>
-                  </div>
-                )}
-              </div>
-
-              {/* Update the Switch component in the directions tab */}
-              <div className="mt-4 flex items-center space-x-2">
-                <Switch id="narrator-mode" checked={isNarratorEnabled} onCheckedChange={handleNarratorToggle} />
-                <Label htmlFor="narrator-mode">Enable Voice Narrator</Label>
-              </div>
+                </div>
+              )}
             </CardContent>
+            
+            <CardFooter>
+              <Button
+                variant="secondary"
+                onClick={onResetSimulation}
+                className="w-full"
+                disabled={!isSimulationRunning}
+              >
+                Reset Simulation
+              </Button>
+            </CardFooter>
           </Card>
         </TabsContent>
       </Tabs>
