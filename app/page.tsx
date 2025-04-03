@@ -21,15 +21,6 @@ export default function Home() {
   const [animationInterval, setAnimationInterval] = useState<NodeJS.Timeout | null>(null);
   const [animationProgress, setAnimationProgress] = useState(0);
   const [vehicleType, setVehicleType] = useState<'ambulance' | 'fire'>('ambulance');
-  // Traffic light management
-  const [trafficLights, setTrafficLights] = useState<Array<{
-    id: string;
-    position: google.maps.LatLngLiteral;
-    status: "red" | "yellow" | "green";
-    lastChanged: number;
-    cycleTime: number;
-  }>>([]);
-  
   // Add routeInfo state
   const [routeInfo, setRouteInfo] = useState<{
     steps: Array<{
@@ -54,8 +45,6 @@ export default function Home() {
   
   const routePointsRef = useRef<google.maps.LatLngLiteral[]>([]);
   const vehiclePositionRef = useRef<google.maps.LatLngLiteral | null>(null);
-  // Track passed traffic lights to avoid playing sound multiple times
-  const passedTrafficLightsRef = useRef<Set<string>>(new Set());
 
   const {
     vehicles,
@@ -81,25 +70,21 @@ export default function Home() {
   const [hasReachedDestination, setHasReachedDestination] = useState(false);
   const [showReachedMessage, setShowReachedMessage] = useState(false);
 
-  // Audio element for bell sound
-  useEffect(() => {
-    // No need to try to load a non-existent file
-    // Just create the audio object when needed
-    return () => {
-      // Clean up
-      delete (window as any).bellSound;
-    };
-  }, []);
-
-  // Function to play bell sound
-  const playBellSound = () => {
-    try {
-      // Create a new audio instance each time to allow overlapping sounds
-      const audio = new Audio('https://www.soundjay.com/misc/sounds/bell-ringing-01.mp3');
-      audio.volume = 0.5; // Set volume to 50%
-      audio.play().catch(err => console.error("Error playing sound:", err));
-    } catch (err) {
-      console.error("Error setting up sound:", err);
+  // Function to speak navigation instructions using the Web Speech API
+  const speakInstruction = (instruction: string) => {
+    if ('speechSynthesis' in window) {
+      // Cancel any ongoing speech
+      window.speechSynthesis.cancel();
+      
+      const utterance = new SpeechSynthesisUtterance(instruction);
+      utterance.rate = 1.0;
+      utterance.pitch = 1.0;
+      utterance.volume = 1.0;
+      
+      window.speechSynthesis.speak(utterance);
+      console.log("Speaking:", instruction);
+    } else {
+      console.warn("Speech synthesis not supported in this browser");
     }
   };
 
@@ -166,49 +151,6 @@ export default function Home() {
     }
   }
 
-  // Generate traffic lights along the route with random initial states
-  const generateTrafficLights = (routePoints: google.maps.LatLngLiteral[]) => {
-    if (routePoints.length < 4) {
-      console.log("Not enough route points to create traffic lights");
-      return [];
-    }
-    
-    const lights = [];
-    // Place lights at regular intervals, but not at the very start or end
-    const interval = Math.max(1, Math.floor(routePoints.length / 5)); // More frequent traffic lights
-    
-    console.log(`Generating traffic lights with interval ${interval} for ${routePoints.length} points`);
-    
-    // Possible traffic light states to simulate normal traffic
-    const possibleStates = ["red", "yellow", "green"] as const;
-    
-    for (let i = interval; i < routePoints.length - interval; i += interval) {
-      // Add a small offset to position lights slightly to the side of the road
-      const offset = 0.0005; // Increased geographical offset for better visibility
-      const position = {
-        lat: routePoints[i].lat + (Math.random() > 0.5 ? offset : -offset),
-        lng: routePoints[i].lng + (Math.random() > 0.5 ? offset : -offset),
-      };
-      
-      // Randomly select an initial state to simulate realistic traffic
-      const randomState = possibleStates[Math.floor(Math.random() * possibleStates.length)];
-      
-      const light = {
-        id: `light-${i}`,
-        position: position,
-        status: randomState,
-        lastChanged: Date.now(), // Track when this light last changed state
-        cycleTime: 5000 + Math.floor(Math.random() * 5000), // Random cycle time (5-10 seconds)
-      };
-      
-      lights.push(light);
-      console.log(`Created traffic light at position:`, position, `with initial state:`, randomState);
-    }
-    
-    console.log(`Generated ${lights.length} traffic lights along the route`);
-    return lights;
-  };
-
   // Function to calculate normal and optimized estimated times
   const calculateEstimatedTimes = (response: google.maps.DirectionsResult) => {
     if (!response.routes || !response.routes[0] || !response.routes[0].legs || !response.routes[0].legs[0]) {
@@ -242,24 +184,6 @@ export default function Home() {
     }));
   };
 
-  // Function to speak navigation instructions using the Web Speech API
-  const speakInstruction = (instruction: string) => {
-    if ('speechSynthesis' in window) {
-      // Cancel any ongoing speech
-      window.speechSynthesis.cancel();
-      
-      const utterance = new SpeechSynthesisUtterance(instruction);
-      utterance.rate = 1.0;
-      utterance.pitch = 1.0;
-      utterance.volume = 1.0;
-      
-      window.speechSynthesis.speak(utterance);
-      console.log("Speaking:", instruction);
-    } else {
-      console.warn("Speech synthesis not supported in this browser");
-    }
-  };
-
   // Simple animation function that moves the start point along the route
   const animateMarkerAlongRoute = (
     start: google.maps.LatLngLiteral,
@@ -271,9 +195,6 @@ export default function Home() {
     if (animationInterval) {
       clearInterval(animationInterval);
     }
-    
-    // Reset passed traffic lights
-    passedTrafficLightsRef.current = new Set();
     
     // Create a simple route if we don't have one
     if (routePointsRef.current.length < 2) {
@@ -290,17 +211,6 @@ export default function Home() {
       console.log("Created simple route with", points.length, "points");
     }
     
-    // Generate traffic lights along the route
-    const lights = generateTrafficLights(routePointsRef.current);
-    setTrafficLights(lights);
-    console.log("Generated", lights.length, "traffic lights along the route");
-    
-    // Force re-render with delay to ensure traffic lights are created
-    setTimeout(() => {
-      console.log("Forcing traffic light update");
-      setTrafficLights([...lights]);
-    }, 500);
-    
     setAnimationProgress(0);
     
     // Initialize the vehicle position reference
@@ -313,11 +223,6 @@ export default function Home() {
       bounds.extend(new window.google.maps.LatLng(start.lat, start.lng));
       bounds.extend(new window.google.maps.LatLng(destination.lat, destination.lng));
       
-      // Also include all traffic lights
-      lights.forEach(light => {
-        bounds.extend(new window.google.maps.LatLng(light.position.lat, light.position.lng));
-      });
-      
       // Fit the map to these bounds with less padding for tighter zoom
       window.googleMap.fitBounds(bounds, 20); // Reduced padding from 100 to 20
       
@@ -327,11 +232,8 @@ export default function Home() {
           const currentZoom = window.googleMap.getZoom() || 15;
           // Increase zoom level by 1 to get closer
           window.googleMap.setZoom(currentZoom + 1);
-          console.log("Increased zoom level for better traffic light visibility");
         }
       }, 500);
-      
-      console.log("Set closer map view to show traffic lights more clearly");
     }
     
     // Calculate random duration between 30-60 seconds for more realistic emergency response
@@ -482,29 +384,8 @@ export default function Home() {
         setStartCoords(newPosition);
         lastPosition = { ...newPosition };
         
-        // Update the vehicle position reference for traffic lights
+        // Update the vehicle position reference
         vehiclePositionRef.current = newPosition;
-        
-        // Check for traffic lights that were passed
-        trafficLights.forEach(light => {
-          // If we haven't passed this light yet
-          if (!passedTrafficLightsRef.current.has(light.id)) {
-            // Calculate distance to the traffic light
-            const distanceToLight = calculateDistance(newPosition, light.position);
-            
-            // If we're very close to the traffic light (within 50 meters)
-            if (distanceToLight < 0.05) {
-              console.log(`Passing traffic light ${light.id}`);
-              // Play bell sound
-              playBellSound();
-              // Mark this light as passed
-              passedTrafficLightsRef.current.add(light.id);
-            }
-          }
-        });
-        
-        // Update traffic lights based on new vehicle position
-        updateTrafficLights();
       }
       
       // If we're done, show the reached destination message but don't clear interval yet
@@ -535,7 +416,6 @@ export default function Home() {
         // Set final position to destination
         setStartCoords(destination);
         vehiclePositionRef.current = destination;
-        updateTrafficLights();
         
         // Stop the simulation - remove the 5 second delay
         clearInterval(interval);
@@ -721,52 +601,6 @@ export default function Home() {
     setIsDarkMode(!isDarkMode)
   }
 
-  // Update traffic light status based on vehicle position and simulate regular traffic changes
-  const updateTrafficLights = () => {
-    if (!vehiclePositionRef.current) return;
-    
-    const now = Date.now();
-    
-    setTrafficLights(prevLights => {
-      return prevLights.map(light => {
-        // Calculate distance from vehicle to this light
-        const distance = calculateDistance(
-          vehiclePositionRef.current!,
-          light.position
-        );
-        
-        // First determine if this light would normally change based on its cycle time
-        const timeSinceLastChange = now - (light.lastChanged || now);
-        const shouldChangeCycle = timeSinceLastChange > (light.cycleTime || 8000);
-        
-        // Determine status based on emergency vehicle distance (priority) or normal cycle
-        let newStatus = light.status;
-        
-        // Emergency vehicle has priority within 500 meters
-        if (distance < 0.5) {
-          newStatus = "green";
-        } else if (distance < 1.0) {
-          newStatus = "yellow";
-        } else if (shouldChangeCycle) {
-          // Normal traffic light cycle if outside emergency vehicle's influence
-          // Cycle: red -> green -> yellow -> red
-          if (light.status === "red") newStatus = "green";
-          else if (light.status === "green") newStatus = "yellow";
-          else if (light.status === "yellow") newStatus = "red";
-        }
-        
-        // Only update lastChanged if the state actually changed
-        const lastChanged = light.status !== newStatus ? now : (light.lastChanged || now);
-        
-        return {
-          ...light,
-          status: newStatus,
-          lastChanged: lastChanged,
-        };
-      });
-    });
-  };
-  
   // Helper function to calculate distance between two points in kilometers
   const calculateDistance = (
     point1: google.maps.LatLngLiteral,
@@ -794,55 +628,90 @@ export default function Home() {
     }
   }, [routeInfo]);
 
-  // Add an effect to force an update every second when simulation is running
-  useEffect(() => {
-    let intervalId: NodeJS.Timeout | null = null;
-    
-    if (isSimulationRunning && directionSteps.length > 0) {
-      // Set up an interval to force a refresh every second
-      intervalId = setInterval(() => {
-        // Create a completely fresh copy of the current state
-        setRouteInfo(prev => ({
-          ...prev,
-          _updateTimestamp: Date.now(),
-          steps: prev.steps.map(step => ({...step, _forceUpdate: Date.now()}))
-        }));
-        
-        console.log("Forced a refresh of navigation instructions");
-      }, 1000); // Every second
-    }
-    
-    return () => {
-      if (intervalId) {
-        clearInterval(intervalId);
-      }
-    };
-  }, [isSimulationRunning, directionSteps.length]);
-
-  // Add map interactivity and zoom controls
-  const updateMapInteractivity = () => {
-    if (window.googleMap) {
-      // Enable zoom controls and interactive features
-      window.googleMap.setOptions({
-        zoomControl: true,
-        scrollwheel: true,
-        draggable: true,
-        disableDoubleClickZoom: false,
-        mapTypeControl: true,
-        streetViewControl: true,
-        fullscreenControl: true
-      });
-      
-      console.log("Map interactive features enabled");
-    }
-  };
-
-  // Call this function when the map is initialized
+  // Call this function when the map is initialized - use fixed positions for ALL controls
   useEffect(() => {
     // Small delay to ensure map is loaded
-    setTimeout(updateMapInteractivity, 1000);
+    setTimeout(() => {
+      if (window.googleMap) {
+        // Set ALL map controls to fixed positions
+        window.googleMap.setOptions({
+          zoomControl: true,
+          zoomControlOptions: {
+            position: window.google.maps.ControlPosition.RIGHT_BOTTOM
+          },
+          scrollwheel: true,
+          draggable: true,
+          disableDoubleClickZoom: false,
+          mapTypeControl: true,
+          mapTypeControlOptions: {
+            position: window.google.maps.ControlPosition.LEFT_BOTTOM,
+            style: window.google.maps.MapTypeControlStyle.HORIZONTAL_BAR
+          },
+          streetViewControl: true,
+          streetViewControlOptions: {
+            position: window.google.maps.ControlPosition.RIGHT_BOTTOM
+          },
+          fullscreenControl: true,
+          fullscreenControlOptions: {
+            position: window.google.maps.ControlPosition.RIGHT_TOP
+          }
+        });
+        
+        console.log("Map controls configured with fixed positions");
+      }
+    }, 1000);
   }, []);
 
+  // Implement a COMPLETELY NEW navigation instructions update mechanism
+  useEffect(() => {
+    // Aggressive update mechanism: Force updates very frequently
+    if (isSimulationRunning) {
+      console.log("Setting up aggressive navigation update interval");
+      
+      // Create a high-frequency update interval
+      const aggressiveUpdateInterval = setInterval(() => {
+        if (routeInfo && routeInfo.steps && routeInfo.steps.length > 0) {
+          // Calculate current progress
+          const progressPercent = animationProgress;
+          
+          // Determine step based on progress
+          const newStepIndex = Math.min(
+            Math.floor((progressPercent / 100) * routeInfo.steps.length),
+            routeInfo.steps.length - 1
+          );
+          
+          console.log(`Forcing navigation update: Progress ${progressPercent.toFixed(1)}%, Step ${newStepIndex+1}/${routeInfo.steps.length}`);
+          
+          // Create entirely new step objects to ensure React detects changes
+          const forceUpdatedSteps = routeInfo.steps.map((step, idx) => ({
+            ...step,
+            instruction: step.instruction,
+            distance: step.distance,
+            maneuver: step.maneuver,
+            completed: idx < newStepIndex,
+            _forceUpdate: Date.now() + idx // Unique timestamp for each step
+          }));
+          
+          // Force update both state variables
+          setCurrentStepIndex(newStepIndex);
+          setDirectionSteps(forceUpdatedSteps);
+          
+          // Create a completely new routeInfo object
+          setRouteInfo({
+            steps: forceUpdatedSteps,
+            currentStepIndex: newStepIndex,
+            normalEstimatedTime,
+            optimizedEstimatedTime,
+            hasReachedDestination: progressPercent >= 100,
+            _updateTimestamp: Date.now()
+          });
+        }
+      }, 200); // Ultra-fast updates - 5 times per second
+      
+      return () => clearInterval(aggressiveUpdateInterval);
+    }
+  }, [isSimulationRunning, animationProgress, routeInfo?.steps?.length]);
+  
   // In the render method, convert string[] alerts to {title, message}[] alerts
   // Fix for the alerts type error
   const formattedAlerts = alerts.map(alert => ({ 
@@ -853,7 +722,7 @@ export default function Home() {
   return (
     <main className={`flex min-h-screen flex-col ${isDarkMode ? "bg-gray-900 text-gray-100" : ""}`}>
       <div className={`flex h-16 items-center border-b px-4 ${isDarkMode ? "border-gray-700 bg-gray-900" : ""}`}>
-        <h1 className="text-xl font-bold">LifeLane</h1>
+        <h1 className="text-xl font-bold bg-gradient-to-r from-blue-500 to-green-500 text-transparent bg-clip-text">LifeLane</h1>
       </div>
       <div className="flex flex-1 overflow-hidden">
         <ControlPanel
@@ -880,7 +749,6 @@ export default function Home() {
                 isSimulationActive={isSimulationRunning || animationInterval !== null}
                 isManuallyEnteredStart={isManuallyEnteredStart}
                 vehicleType={vehicleType}
-                trafficLights={trafficLights}
               />
             )}
             {/* Emergency simulation when running - always render this component */}
@@ -888,6 +756,62 @@ export default function Home() {
               <EmergencySimulation />
             )}
           </MapContainer>
+
+          {/* Top-right corner navigation instructions - Only show when vehicle has NOT reached destination */}
+          {(isSimulationRunning || animationInterval) && 
+           routeInfo && routeInfo.steps && routeInfo.steps.length > 0 && 
+           !hasReachedDestination && !showReachedMessage && (
+            <div 
+              key={`nav-container-${Date.now()}`}
+              className={`absolute top-16 right-4 z-10 w-80 max-h-96 overflow-y-auto rounded-md shadow-lg ${isDarkMode ? "bg-gray-800 border border-gray-700" : "bg-white border border-gray-200"}`}
+            >
+              <div className={`p-3 font-medium border-b ${isDarkMode ? "border-gray-700 text-white" : "border-gray-200"}`}>
+                Navigation Instructions
+              </div>
+              <div className="p-2 space-y-2 max-h-80 overflow-y-auto">
+                {routeInfo.steps.map((step, index) => (
+                  <div 
+                    key={`nav-step-${index}-${Date.now()}`} 
+                    className={`p-2 rounded-md ${
+                      index === routeInfo.currentStepIndex
+                        ? isDarkMode 
+                          ? "bg-blue-900 text-white" 
+                          : "bg-blue-50 border-blue-200"
+                        : isDarkMode
+                          ? "bg-gray-700 text-gray-300"
+                          : "bg-gray-50"
+                    } ${step.completed ? "opacity-60" : ""}`}
+                  >
+                    <div className="flex items-start gap-2">
+                      <div className={`mt-1 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-xs ${
+                        index === routeInfo.currentStepIndex
+                          ? isDarkMode
+                            ? "bg-blue-500 text-white"
+                            : "bg-blue-500 text-white"
+                          : step.completed
+                            ? isDarkMode
+                              ? "bg-gray-600 text-gray-300"
+                              : "bg-gray-400 text-white"
+                            : isDarkMode
+                              ? "bg-gray-600 text-gray-300" 
+                              : "bg-gray-300 text-gray-700"
+                      }`}>
+                        {step.completed ? "✓" : index + 1}
+                      </div>
+                      <div className="flex-1 text-sm">
+                        <span className={`${step.completed ? "line-through" : ""}`}>{step.instruction}</span>
+                        {step.distance && (
+                          <span className={`text-xs block ${isDarkMode ? "text-gray-400" : "text-gray-500"}`}>
+                            {step.distance}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Top Progress Bar */}
           {(isSimulationRunning || animationInterval) && (

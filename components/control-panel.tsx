@@ -390,7 +390,7 @@ export function ControlPanel({
                         <Clock className="h-4 w-4 text-blue-500" />
                         <span className={`text-sm ${isDarkMode ? "text-gray-200" : ""}`}>
                           Estimated Time: <span className="font-medium">{formatTime(routeInfo.remainingDuration)}</span>
-                          {routeInfo.savedTime > 0 && (
+                          {routeInfo.savedTime && routeInfo.savedTime > 0 && (
                             <span className="ml-1 text-green-500">(Saved {Math.floor(routeInfo.savedTime)}s)</span>
                           )}
                         </span>
@@ -404,12 +404,6 @@ export function ControlPanel({
                       className={isDarkMode ? "bg-green-900 text-green-300" : "bg-green-100 text-green-800"}
                     >
                       Route Active
-                    </Badge>
-                    <Badge
-                      variant="outline"
-                      className={isDarkMode ? "bg-yellow-900 text-yellow-300" : "bg-yellow-100 text-yellow-800"}
-                    >
-                      Traffic Lights Managed
                     </Badge>
                   </div>
                   <div className="mt-2">
@@ -448,23 +442,6 @@ export function ControlPanel({
               </CardHeader>
               <CardContent>
                 <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className={`text-sm ${isDarkMode ? "text-gray-300" : ""}`}>Traffic Light Control:</span>
-                    <Badge
-                      variant="outline"
-                      className={
-                        isSimulationRunning
-                          ? isDarkMode
-                            ? "bg-green-900 text-green-300"
-                            : "bg-green-100 text-green-800"
-                          : isDarkMode
-                            ? "bg-gray-700 text-gray-400"
-                            : "bg-gray-100"
-                      }
-                    >
-                      {isSimulationRunning ? "Active" : "Standby"}
-                    </Badge>
-                  </div>
                   <div className="flex items-center justify-between">
                     <span className={`text-sm ${isDarkMode ? "text-gray-300" : ""}`}>Route Optimization:</span>
                     <Badge
@@ -563,7 +540,7 @@ export function ControlPanel({
                   <BanIcon className="mx-auto h-12 w-12 text-gray-400 mb-3" />
                   <h3 className={`text-lg font-medium mb-1 ${isDarkMode ? "text-white" : "text-gray-900"}`}>No Active Route</h3>
                   <p className={isDarkMode ? "text-gray-400" : "text-gray-500"}>
-                    Start an emergency route to see turn-by-turn directions.
+                    Start an emergency route to see directions.
                   </p>
                 </div>
               ) : (

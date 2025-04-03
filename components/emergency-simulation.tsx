@@ -45,14 +45,6 @@ export function EmergencySimulation() {
 
   // Don't return null even if simulation is not active
   // This allows us to debug and see if the component is being rendered
-  if (!isSimulationActive) {
-    console.log("Simulation is not active, but component is rendered");
-    return (
-      <div className="fixed top-20 left-1/2 z-50 -translate-x-1/2 bg-yellow-500 px-4 py-2 rounded-lg shadow-lg">
-        Waiting for simulation to start...
-      </div>
-    );
-  }
 
   return (
     <>
@@ -77,77 +69,6 @@ export function EmergencySimulation() {
         />
       ))}
 
-      {/* Dashboard with simulation information */}
-      <div className="fixed right-4 top-4 z-50 flex flex-col space-y-2">
-        {/* Visual indicators of traffic light status */}
-        <div className="rounded-lg bg-white/90 p-3 shadow-lg backdrop-blur-sm dark:bg-gray-800/90">
-          <h3 className="mb-2 text-lg font-semibold">Traffic Light Status</h3>
-          <div className="grid grid-cols-4 gap-2">
-            <div className="text-xs">ID</div>
-            <div className="text-xs">Status</div>
-            <div className="text-xs">Distance</div>
-            <div className="text-xs">Action</div>
-            
-            {trafficLights.map((light) => {
-              // Find nearest vehicle to this light
-              const nearestVehicle = vehicles[0]; // For simplicity, just use the first vehicle
-              const distance = calculateDistance(nearestVehicle.position, light.position);
-              
-              return (
-                <React.Fragment key={light.id}>
-                  <div className="font-medium">{light.id}</div>
-                  <div className="flex items-center space-x-1">
-                    <span 
-                      className={`h-3 w-3 rounded-full ${
-                        light.status === "red" ? "bg-red-500" : 
-                        light.status === "yellow" ? "bg-yellow-500" : 
-                        "bg-green-500"
-                      }`} 
-                    />
-                    <span className="text-xs capitalize">{light.status}</span>
-                  </div>
-                  <div className="text-sm">{(distance * 1000).toFixed(0)}m</div>
-                  <div className="text-xs">
-                    {distance < 0.2 ? 
-                      <span className="text-green-500">Priority</span> : 
-                      distance < 0.5 ? 
-                        <span className="text-yellow-500">Preparing</span> : 
-                        <span className="text-gray-500">Normal</span>
-                    }
-                  </div>
-                </React.Fragment>
-              );
-            })}
-          </div>
-        </div>
-        
-        {/* Destination */}
-        <div className="rounded-lg bg-white/90 p-3 shadow-lg backdrop-blur-sm dark:bg-gray-800/90">
-          <h3 className="text-md font-semibold">Destination</h3>
-          <p className="text-sm">{currentDestination}</p>
-          {routeInfo.remainingDistance > 0 && (
-            <div className="mt-2 text-sm">
-              <div>Remaining: {routeInfo.remainingDistance.toFixed(2)} km</div>
-              <div>ETA: {formatTime(routeInfo.remainingDuration)}</div>
-              {routeInfo.savedTime > 0 && (
-                <div className="text-green-500">
-                  Time saved: {formatTime(routeInfo.savedTime)}
-                </div>
-              )}
-              <div className="mt-1">
-                <div className="h-2 w-full rounded-full bg-gray-200">
-                  <div
-                    className="h-2 rounded-full bg-blue-500"
-                    style={{
-                      width: `${(1 - routeInfo.remainingDistance / routeInfo.distance) * 100}%`,
-                    }}
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
 
       {/* Alerts and turn-by-turn directions */}
       <div className="fixed bottom-4 left-4 z-50 max-w-md">
