@@ -6,6 +6,7 @@ import { ControlPanel } from "@/components/control-panel"
 import { EmergencySimulation } from "@/components/emergency-simulation"
 import { RoutePreview } from "@/components/route-preview" 
 import { useEmergencyRoute } from "@/hooks/use-emergency-route"
+import { StartPointMarker } from "@/components/start-point-marker"
 
 export default function Home() {
   const [destination, setDestination] = useState("")
@@ -36,11 +37,13 @@ export default function Home() {
       distance: string;
       maneuver?: string;
       completed: boolean;
+      _forceUpdate?: number;
     }>;
     currentStepIndex: number;
     normalEstimatedTime: number | null;
     optimizedEstimatedTime: number | null;
     hasReachedDestination: boolean;
+    _updateTimestamp?: number;
   }>({
     steps: [],
     currentStepIndex: 0,
@@ -70,6 +73,7 @@ export default function Home() {
     distance: string;
     maneuver?: string;
     completed: boolean;
+    _forceUpdate?: number;
   }>>([]);
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [normalEstimatedTime, setNormalEstimatedTime] = useState<number | null>(null);
@@ -79,11 +83,8 @@ export default function Home() {
 
   // Audio element for bell sound
   useEffect(() => {
-    // Create audio element for bell sound
-    const audio = new Audio('/bell-sound.mp3');
-    // Make it available globally
-    (window as any).bellSound = audio;
-    
+    // No need to try to load a non-existent file
+    // Just create the audio object when needed
     return () => {
       // Clean up
       delete (window as any).bellSound;
@@ -380,36 +381,78 @@ export default function Home() {
         remainingTime
       }));
       
-      // Update direction steps based on progress - improved logic
-      if (directionSteps.length > 0) {
-        // Calculate which step we're on based on progress with better precision
-        const stepIndex = Math.min(
-          Math.floor(progress * directionSteps.length),
-          directionSteps.length - 1
-        );
+      // IMPROVED NAVIGATION STEP LOGIC with more reliable updates - completely redesigned
+      if (directionSteps.length > 0 && routePointsRef.current.length > 0) {
+        // Calculate progress percentage to determine step
+        const completionPercent = progress * 100;
         
-        // Only update if the step has changed or we need to force an update
-        if (stepIndex !== currentStepIndex || currentStep % 10 === 0) {
-          console.log(`Updating to navigation step ${stepIndex}`);
-          // Update the current step index
-          setCurrentStepIndex(stepIndex);
+        // Use distance-based progress tracking for more accurate step changes
+        // Get current vehicle position
+        const currentVehiclePosition = vehiclePositionRef.current;
+        
+        if (currentVehiclePosition) {
+          // Calculate which step we should be on based on distance traveled
+          let closestStepIndex = 0;
+          let cumulativeDistanceTraveled = 0;
+          let totalRouteDistance = calculateTotalRouteDistance(routePointsRef.current);
           
-          // Mark previous steps as completed
-          const updatedSteps = directionSteps.map((step, index) => ({
-            ...step,
-            completed: index < stepIndex
-          }));
+          // Progression based on percentage of total route completed
+          const distanceTraveled = completionPercent / 100 * totalRouteDistance;
           
-          setDirectionSteps(updatedSteps);
+          // Map distance traveled to step index with a slightly accelerated progression
+          // This ensures steps change slightly before the vehicle actually reaches that point
+          const stepProgressionRate = 1.1; // Accelerate step changes by 10%
+          const acceleratedDistanceTraveled = distanceTraveled * stepProgressionRate;
           
-          // Update route info for the control panel
-          setRouteInfo({
-            steps: updatedSteps,
-            currentStepIndex: stepIndex,
-            normalEstimatedTime,
-            optimizedEstimatedTime,
-            hasReachedDestination: false
-          });
+          // Calculate which step corresponds to this distance
+          const stepsPerKm = directionSteps.length / totalRouteDistance;
+          const calculatedStepIndex = Math.min(
+            Math.floor(acceleratedDistanceTraveled * stepsPerKm),
+            directionSteps.length - 1
+          );
+          
+          // Set a minimum step index based on progress to ensure steps advance
+          // This guarantees that by 75% progress, we've seen at least 75% of the steps
+          const minimumStep = Math.floor(completionPercent / 100 * directionSteps.length * 0.9);
+          
+          // Take the maximum to ensure we never go backwards in steps
+          const newStepIndex = Math.max(calculatedStepIndex, minimumStep);
+          
+          // Only update if the step changed
+          if (newStepIndex !== currentStepIndex) {
+            console.log(`Navigation step changing from ${currentStepIndex} to ${newStepIndex} (${completionPercent.toFixed(1)}% complete)`);
+            
+            // Update the current step index
+            setCurrentStepIndex(newStepIndex);
+            
+            // Create a completely fresh array with updated completion status
+            const updatedSteps = directionSteps.map((step, idx) => {
+              return {
+                ...step,
+                instruction: step.instruction,
+                distance: step.distance,
+                maneuver: step.maneuver,
+                completed: idx < newStepIndex,
+                // Add a timestamp to force React to see this as a new object
+                _forceUpdate: Date.now() + (idx * 100)
+              };
+            });
+            
+            // Force replace the steps array
+            setDirectionSteps(updatedSteps);
+            
+            // Update route info with a completely new object
+            const updatedRouteInfo = {
+              steps: updatedSteps,
+              currentStepIndex: newStepIndex,
+              normalEstimatedTime: normalEstimatedTime,
+              optimizedEstimatedTime: optimizedEstimatedTime,
+              hasReachedDestination: progress >= 1,
+              _updateTimestamp: Date.now()
+            };
+            
+            setRouteInfo(updatedRouteInfo);
+          }
         }
       }
       
@@ -469,7 +512,7 @@ export default function Home() {
         console.log("Animation complete - destination reached");
         setHasReachedDestination(true);
         
-        // Speak destination reached
+        // Speak destination reached without delay
         speakInstruction("You have reached your destination.");
         
         // Show the reached message
@@ -494,14 +537,12 @@ export default function Home() {
         vehiclePositionRef.current = destination;
         updateTrafficLights();
         
-        // Wait 5 seconds before stopping the simulation completely
-        setTimeout(() => {
-          clearInterval(interval);
-          setAnimationInterval(null);
-          console.log("Simulation stopped after 5 seconds delay");
-          // Properly stop simulation
-          setIsSimulationRunning(false);
-        }, 5000);
+        // Stop the simulation - remove the 5 second delay
+        clearInterval(interval);
+        setAnimationInterval(null);
+        console.log("Simulation stopped immediately after reaching destination");
+        // Properly stop simulation
+        setIsSimulationRunning(false);
       }
     }, updateIntervalMs);
     
@@ -746,10 +787,73 @@ export default function Home() {
     return R * c; // Distance in km
   };
 
+  // Add a diagnostics effect to log updates to help debug
+  useEffect(() => {
+    if (routeInfo && routeInfo.steps && routeInfo.steps.length > 0) {
+      console.log(`routeInfo was updated with ${routeInfo.steps.length} steps, current step: ${routeInfo.currentStepIndex}`);
+    }
+  }, [routeInfo]);
+
+  // Add an effect to force an update every second when simulation is running
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout | null = null;
+    
+    if (isSimulationRunning && directionSteps.length > 0) {
+      // Set up an interval to force a refresh every second
+      intervalId = setInterval(() => {
+        // Create a completely fresh copy of the current state
+        setRouteInfo(prev => ({
+          ...prev,
+          _updateTimestamp: Date.now(),
+          steps: prev.steps.map(step => ({...step, _forceUpdate: Date.now()}))
+        }));
+        
+        console.log("Forced a refresh of navigation instructions");
+      }, 1000); // Every second
+    }
+    
+    return () => {
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+    };
+  }, [isSimulationRunning, directionSteps.length]);
+
+  // Add map interactivity and zoom controls
+  const updateMapInteractivity = () => {
+    if (window.googleMap) {
+      // Enable zoom controls and interactive features
+      window.googleMap.setOptions({
+        zoomControl: true,
+        scrollwheel: true,
+        draggable: true,
+        disableDoubleClickZoom: false,
+        mapTypeControl: true,
+        streetViewControl: true,
+        fullscreenControl: true
+      });
+      
+      console.log("Map interactive features enabled");
+    }
+  };
+
+  // Call this function when the map is initialized
+  useEffect(() => {
+    // Small delay to ensure map is loaded
+    setTimeout(updateMapInteractivity, 1000);
+  }, []);
+
+  // In the render method, convert string[] alerts to {title, message}[] alerts
+  // Fix for the alerts type error
+  const formattedAlerts = alerts.map(alert => ({ 
+    title: "System Alert", 
+    message: alert 
+  }));
+
   return (
     <main className={`flex min-h-screen flex-col ${isDarkMode ? "bg-gray-900 text-gray-100" : ""}`}>
       <div className={`flex h-16 items-center border-b px-4 ${isDarkMode ? "border-gray-700 bg-gray-900" : ""}`}>
-        <h1 className="text-xl font-bold">Emergency Vehicle Traffic Management System</h1>
+        <h1 className="text-xl font-bold">LifeLane</h1>
       </div>
       <div className="flex flex-1 overflow-hidden">
         <ControlPanel
@@ -759,7 +863,7 @@ export default function Home() {
           isSimulationRunning={isSimulationRunning}
           currentDestination={currentDestination}
           directions={directions}
-          alerts={alerts}
+          alerts={formattedAlerts}
           onAddAmbulance={handleAddAmbulance}
           ambulanceCount={vehicles.length}
           isDarkMode={isDarkMode}
@@ -784,29 +888,48 @@ export default function Home() {
               <EmergencySimulation />
             )}
           </MapContainer>
-          
-          {/* Add a minimal notification with just progress when simulation is active */}
+
+          {/* Top Progress Bar */}
           {(isSimulationRunning || animationInterval) && (
-            <div className="absolute left-1/2 top-2 z-50 -translate-x-1/2 rounded-lg bg-blue-600 px-4 py-2 text-white shadow-lg">
-              <div className="flex items-center space-x-2">
-                <span className="animate-pulse">{vehicleType === 'ambulance' ? '🚑' : '🚒'}</span>
-                <span>Progress: {Math.round(animationProgress)}% Complete</span>
-              </div>
-              
-              {/* Arrived message */}
-              {showReachedMessage && (
-                <div className="mt-1 font-bold text-center bg-green-700 py-1 px-2 rounded">
-                  Destination Reached!
+            <div className={`absolute left-0 right-0 top-0 p-3 ${isDarkMode ? "bg-gray-800 border-gray-700 text-white" : "bg-white/80 shadow-md"} transition-all duration-300`}>
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center">
+                  <span className={`font-medium ${isDarkMode ? "text-blue-300" : "text-blue-600"}`}>
+                    Emergency Route
+                  </span>
+                  {vehicleType && (
+                    <span className={`ml-2 px-2 py-0.5 text-xs rounded-full ${
+                      vehicleType === 'ambulance' 
+                        ? isDarkMode ? 'bg-red-900 text-red-100' : 'bg-red-100 text-red-800' 
+                        : isDarkMode ? 'bg-orange-900 text-orange-100' : 'bg-orange-100 text-orange-800'
+                    }`}>
+                      {vehicleType === 'ambulance' ? 'Ambulance' : 'Fire Truck'}
+                    </span>
+                  )}
                 </div>
-              )}
-              
+                <div className={`text-sm ${isDarkMode ? "text-gray-300" : "text-gray-600"}`}>
+                  {animationProgress.toFixed(0)}% Complete
+                </div>
+              </div>
+
               {/* Progress bar */}
-              <div className="mt-1 h-2 w-full rounded-full bg-blue-800">
-                <div 
-                  className="h-2 rounded-full bg-white transition-all duration-100 ease-out" 
+              <div className={`h-2 w-full overflow-hidden rounded-full ${isDarkMode ? "bg-gray-700" : "bg-gray-200"}`}>
+                <div
+                  className={`h-full rounded-full transition-all ${
+                    hasReachedDestination 
+                      ? isDarkMode ? "bg-green-500" : "bg-green-500" 
+                      : isDarkMode ? "bg-blue-500" : "bg-blue-600"
+                  }`}
                   style={{ width: `${animationProgress}%` }}
                 />
               </div>
+
+              {/* Destination reached message */}
+              {showReachedMessage && (
+                <div className={`mt-2 text-center font-bold ${isDarkMode ? "text-green-400" : "text-green-600"}`}>
+                  Destination Reached!
+                </div>
+              )}
             </div>
           )}
         </div>
