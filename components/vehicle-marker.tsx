@@ -21,9 +21,7 @@ export function VehicleMarker({ vehicle, isSelected = false, onSelect }: Vehicle
     // Create marker if it doesn't exist
     if (!markerRef.current) {
       const icon = {
-        url: vehicle.type === 'ambulance' 
-          ? 'https://cdn-icons-png.flaticon.com/512/2830/2830332.png'
-          : 'https://static.vecteezy.com/system/resources/previews/019/907/530/non_2x/fire-truck-graphic-clipart-design-free-png.png',
+        url: 'https://cdn-icons-png.flaticon.com/512/2830/2830332.png', // Use same ambulance image for all vehicles
         scaledSize: new window.google.maps.Size(60, 60),
         anchor: new window.google.maps.Point(30, 30)
       };

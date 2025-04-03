@@ -29,6 +29,28 @@ export const AddVehicleModal: React.FC<AddVehicleModalProps> = ({
     { name: "Panjab University", coords: "30.7603,76.7664" },
     { name: "Chandigarh Airport", coords: "30.6735,76.7885" },
   ]);
+  
+  // Predefined conflict scenarios for demonstration
+  const conflictScenarios = [
+    {
+      name: "Intersection Conflict",
+      description: "Two ambulances crossing at a major intersection",
+      start: "30.7433,76.7839", // Sector 17
+      destination: "30.7372,76.7698" // Government Medical College
+    },
+    {
+      name: "Alternate Route Demo",
+      description: "Shows rerouting through alternate path",
+      start: "30.7056,76.8013", // Elante Mall
+      destination: "30.7512,76.8044" // Rock Garden
+    },
+    {
+      name: "Wait Priority Demo",
+      description: "One vehicle must wait at intersection",
+      start: "30.6798,76.8078", // Railway Station
+      destination: "30.7603,76.7664" // Panjab University
+    }
+  ];
 
   // Reset form when modal opens
   useEffect(() => {
@@ -46,6 +68,12 @@ export const AddVehicleModal: React.FC<AddVehicleModalProps> = ({
     } else {
       setDestination(coords);
     }
+  };
+
+  // Handle conflict scenario selection
+  const handleSelectConflictScenario = (scenario: typeof conflictScenarios[0]) => {
+    setStartPoint(scenario.start);
+    setDestination(scenario.destination);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -89,6 +117,31 @@ export const AddVehicleModal: React.FC<AddVehicleModalProps> = ({
                 />
                 <span className="dark:text-gray-300">Fire Truck</span>
               </label>
+            </div>
+          </div>
+
+          {/* Conflict scenarios section */}
+          <div className="mb-4 p-3 border rounded-md border-blue-200 bg-blue-50 dark:bg-blue-900/30 dark:border-blue-800">
+            <label className="block text-sm font-medium mb-2 text-blue-700 dark:text-blue-300">
+              Demonstration Scenarios
+            </label>
+            <p className="text-xs mb-2 text-blue-600 dark:text-blue-400">
+              Select a preset scenario to demonstrate conflict resolution:
+            </p>
+            <div className="space-y-2">
+              {conflictScenarios.map((scenario) => (
+                <button
+                  key={scenario.name}
+                  type="button"
+                  onClick={() => handleSelectConflictScenario(scenario)}
+                  className="w-full text-left p-2 text-sm rounded bg-white hover:bg-blue-100 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-white border border-blue-200 dark:border-blue-800"
+                >
+                  <div className="font-medium">{scenario.name}</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">
+                    {scenario.description}
+                  </div>
+                </button>
+              ))}
             </div>
           </div>
           

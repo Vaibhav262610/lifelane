@@ -216,7 +216,7 @@ export default function Home() {
   const playBellSound = () => {
     try {
       // Create a new audio instance each time to allow overlapping sounds
-      const audio = new Audio('https://www.soundjay.com/misc/sounds/bell-ringing-01.mp3');
+      const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/933/933-preview.mp3');
       audio.volume = 0.5; // Set volume to 50%
       audio.play().catch(err => console.error("Error playing sound:", err));
     } catch (err) {
@@ -710,17 +710,37 @@ export default function Home() {
     if (window.googleMap && window.google) {
       const directionsService = new window.google.maps.DirectionsService();
       
+      // For selected demo scenarios, force alternate route
+      const forceAlternateRoute = startPoint.includes("30.7433,76.7839") || // Sector 17
+                                  startPoint.includes("30.7056,76.8013") || // Elante Mall
+                                  startPoint.includes("30.6798,76.8078");  // Railway Station
+      
       directionsService.route(
         {
           origin: startCoords,
           destination: destCoords,
           travelMode: window.google.maps.TravelMode.DRIVING,
+          provideRouteAlternatives: true,
+          optimizeWaypoints: false,
+          // For conflict scenarios, we want to add a waypoint to create an intersecting route
+          ...(forceAlternateRoute && {
+            waypoints: [{
+              location: new window.google.maps.LatLng(
+                startCoords.lat + (destCoords.lat - startCoords.lat) * 0.5 + 0.003,
+                startCoords.lng + (destCoords.lng - startCoords.lng) * 0.5 - 0.003
+              ),
+              stopover: false
+            }]
+          })
         },
         (response, status) => {
           if (status === window.google.maps.DirectionsStatus.OK && response) {
             // Extract route points
             const points: google.maps.LatLngLiteral[] = [];
-            const route = response.routes[0];
+            
+            // For conflict scenarios, use an alternate route if available
+            const routeIndex = forceAlternateRoute && response.routes.length > 1 ? 1 : 0;
+            const route = response.routes[routeIndex];
             const path = route.overview_path;
             
             // Convert Google's LatLng objects to LatLngLiteral
@@ -730,6 +750,26 @@ export default function Home() {
                 lng: point.lng(),
               });
             });
+            
+            // Generate traffic lights for this route path
+            const vehicleLights = generateTrafficLights(points);
+            console.log(`Generated ${vehicleLights.length} traffic lights for additional vehicle route`);
+            
+            // Merge with existing traffic lights, avoiding duplicates by position
+            const existingPositions = new Map(trafficLights.map(light => 
+              [`${light.position.lat.toFixed(5)},${light.position.lng.toFixed(5)}`, light]
+            ));
+            
+            vehicleLights.forEach(light => {
+              const posKey = `${light.position.lat.toFixed(5)},${light.position.lng.toFixed(5)}`;
+              if (!existingPositions.has(posKey)) {
+                existingPositions.set(posKey, light);
+              }
+            });
+            
+            // Update traffic lights
+            const mergedLights = Array.from(existingPositions.values());
+            setTrafficLights(mergedLights);
             
             // Extract direction steps
             const steps = extractDirectionSteps(response);
@@ -754,6 +794,12 @@ export default function Home() {
               
               // Ensure map shows all vehicles
               updateMapBoundsForAllVehicles();
+              
+              // For conflict demo, log and add alert
+              if (forceAlternateRoute) {
+                console.log("Using alternate route for conflict demonstration");
+                alerts.unshift("Conflict scenario activated - using alternate route to demonstrate conflict resolution");
+              }
             }
           } else {
             console.error("Could not get directions for additional vehicle");
@@ -783,6 +829,9 @@ export default function Home() {
     const updateIntervalMs = 200; // 200ms
     const totalSteps = totalDurationMs / updateIntervalMs;
     let currentStep = 0;
+    
+    // Store vehicle's passed traffic lights
+    const passedTrafficLights = new Set<string>();
     
     const interval = setInterval(() => {
       currentStep++;
@@ -814,6 +863,31 @@ export default function Home() {
           progress * 100,
           Math.floor(progress * vehicle.steps.length)
         );
+        
+        // Check if we're near traffic lights
+        trafficLights.forEach(light => {
+          // If we haven't passed this light yet
+          if (!passedTrafficLights.has(light.id)) {
+            // Calculate distance to the traffic light
+            const distanceToLight = calculateDistance(newPosition, light.position);
+            
+            // If we're very close to the traffic light (within 50 meters)
+            if (distanceToLight < 0.05) {
+              console.log(`Vehicle ${vehicleId} passing traffic light ${light.id}`);
+              // Play bell sound
+              playBellSound();
+              // Mark this light as passed
+              passedTrafficLights.add(light.id);
+              
+              // Update traffic light status - turn green for emergency vehicles
+              setTrafficLights(prevLights => 
+                prevLights.map(tl => 
+                  tl.id === light.id ? {...tl, status: "green", lastChanged: Date.now()} : tl
+                )
+              );
+            }
+          }
+        });
         
         // Check if any waiting vehicles can resume
         vehicleManager.checkAndResumeWaitingVehicles();
@@ -1202,57 +1276,167 @@ export default function Home() {
           )}
 
           {/* Top-right corner navigation instructions - Only show when vehicle has NOT reached destination */}
-          {(isSimulationRunning || animationInterval) && 
-           routeInfo && routeInfo.steps && routeInfo.steps.length > 0 && 
-           !hasReachedDestination && !showReachedMessage && (
+          {(isSimulationRunning || animationInterval || additionalVehicles.length > 0) && (
             <div 
               key={`nav-container-${Date.now()}`}
-              className={`absolute top-16 right-4 z-10 w-80 max-h-96 overflow-y-auto rounded-md shadow-lg ${isDarkMode ? "bg-gray-800 border border-gray-700" : "bg-white border border-gray-200"}`}
+              className={`absolute top-16 right-4 z-10 w-96 max-h-[calc(100vh-100px)] overflow-y-auto rounded-md shadow-lg ${isDarkMode ? "bg-gray-800 border border-gray-700" : "bg-white border border-gray-200"}`}
             >
-              <div className={`p-3 font-medium border-b ${isDarkMode ? "border-gray-700 text-white" : "border-gray-200"}`}>
-                Navigation Instructions
-              </div>
-              <div className="p-2 space-y-2 max-h-80 overflow-y-auto">
-                {routeInfo.steps.map((step, index) => (
-                  <div 
-                    key={`nav-step-${index}-${Date.now()}`} 
-                    className={`p-2 rounded-md ${
-                      index === routeInfo.currentStepIndex
-                        ? isDarkMode 
-                          ? "bg-blue-900 text-white" 
-                          : "bg-blue-50 border-blue-200"
-                        : isDarkMode
-                          ? "bg-gray-700 text-gray-300"
-                          : "bg-gray-50"
-                    } ${step.completed ? "opacity-60" : ""}`}
+              <div className={`p-3 font-medium border-b ${isDarkMode ? "border-gray-700 text-white" : "border-gray-200"} sticky top-0 ${isDarkMode ? "bg-gray-800" : "bg-white"} z-10`}>
+                <div className="flex justify-between items-center">
+                  <span>Navigation Instructions</span>
+                  <button 
+                    className={`text-xs px-2 py-1 rounded ${isDarkMode ? "bg-gray-700 hover:bg-gray-600" : "bg-gray-100 hover:bg-gray-200"}`}
+                    onClick={() => setIsMapViewFreezed(!isMapViewFreezed)}
                   >
-                    <div className="flex items-start gap-2">
-                      <div className={`mt-1 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-xs ${
-                        index === routeInfo.currentStepIndex
-                          ? isDarkMode
-                            ? "bg-blue-500 text-white"
-                            : "bg-blue-500 text-white"
-                          : step.completed
-                            ? isDarkMode
-                              ? "bg-gray-600 text-gray-300"
-                              : "bg-gray-400 text-white"
-                            : isDarkMode
-                              ? "bg-gray-600 text-gray-300" 
-                              : "bg-gray-300 text-gray-700"
-                      }`}>
-                        {step.completed ? "✓" : index + 1}
-                      </div>
-                      <div className="flex-1 text-sm">
-                        <span className={`${step.completed ? "line-through" : ""}`}>{step.instruction}</span>
-                        {step.distance && (
-                          <span className={`text-xs block ${isDarkMode ? "text-gray-400" : "text-gray-500"}`}>
-                            {step.distance}
-                          </span>
-                        )}
-                      </div>
+                    {isMapViewFreezed ? 'Unfreeze Map' : 'Freeze Map'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-y-auto">
+                {/* Main vehicle instructions */}
+                {routeInfo && routeInfo.steps && routeInfo.steps.length > 0 && 
+                 !hasReachedDestination && !showReachedMessage && (
+                  <div>
+                    <div className={`px-3 py-2 text-sm font-semibold ${isDarkMode ? "bg-gray-700 text-white" : "bg-gray-100"}`}>
+                      Primary Vehicle {hasReachedDestination ? "(Arrived)" : ""}
+                    </div>
+                    <div className="p-2 space-y-2">
+                      {routeInfo.steps.map((step, index) => (
+                        <div 
+                          key={`main-nav-step-${index}-${Date.now()}`} 
+                          className={`p-2 rounded-md ${
+                            index === routeInfo.currentStepIndex
+                              ? isDarkMode 
+                                ? "bg-blue-900 text-white" 
+                                : "bg-blue-50 border-blue-200"
+                              : isDarkMode
+                                ? "bg-gray-700 text-gray-300"
+                                : "bg-gray-50"
+                          } ${step.completed ? "opacity-60" : ""}`}
+                        >
+                          <div className="flex items-start gap-2">
+                            <div className={`mt-1 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-xs ${
+                              index === routeInfo.currentStepIndex
+                                ? isDarkMode
+                                  ? "bg-blue-500 text-white"
+                                  : "bg-blue-500 text-white"
+                                : step.completed
+                                  ? isDarkMode
+                                    ? "bg-gray-600 text-gray-300"
+                                    : "bg-gray-400 text-white"
+                                  : isDarkMode
+                                    ? "bg-gray-600 text-gray-300" 
+                                    : "bg-gray-300 text-gray-700"
+                            }`}>
+                              {step.completed ? "✓" : index + 1}
+                            </div>
+                            <div className="flex-1 text-sm">
+                              <span className={`${step.completed ? "line-through" : ""}`}>{step.instruction}</span>
+                              {step.distance && (
+                                <span className={`text-xs block ${isDarkMode ? "text-gray-400" : "text-gray-500"}`}>
+                                  {step.distance}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
-                ))}
+                )}
+
+                {/* Additional vehicles instructions */}
+                {additionalVehicles.length > 0 && (
+                  <div>
+                    {additionalVehicles.map(vehicle => (
+                      <div key={`vehicle-${vehicle.id}`}>
+                        <div 
+                          className={`px-3 py-2 text-sm font-semibold ${
+                            selectedVehicleId === vehicle.id
+                              ? isDarkMode ? "bg-blue-800 text-white" : "bg-blue-100"
+                              : isDarkMode ? "bg-gray-700 text-white" : "bg-gray-100"
+                          } cursor-pointer`}
+                          onClick={() => handleSelectVehicle(vehicle.id)}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center">
+                              <div 
+                                className={`w-2 h-2 rounded-full mr-2 ${
+                                  vehicle.status === 'waiting' ? 'bg-yellow-500' :
+                                  vehicle.status === 'completed' ? 'bg-green-500' :
+                                  vehicle.conflictDetected ? 'bg-red-500' : 'bg-blue-500'
+                                }`}
+                              ></div>
+                              <span>
+                                Vehicle {vehicle.id.substring(0, 4)} {vehicle.status === 'completed' ? "(Arrived)" : ""}
+                              </span>
+                            </div>
+                            <div className="text-xs">
+                              {vehicle.progress.toFixed(0)}% Complete
+                            </div>
+                          </div>
+                        </div>
+                        
+                        {/* Only show steps for selected or single vehicle */}
+                        {(selectedVehicleId === vehicle.id || additionalVehicles.length === 1) && (
+                          <div className="p-2 space-y-2">
+                            {vehicle.steps.map((step, index) => (
+                              <div 
+                                key={`add-nav-step-${vehicle.id}-${index}`} 
+                                className={`p-2 rounded-md ${
+                                  index === vehicle.currentStepIndex
+                                    ? isDarkMode 
+                                      ? "bg-blue-900 text-white" 
+                                      : "bg-blue-50 border-blue-200"
+                                    : isDarkMode
+                                      ? "bg-gray-700 text-gray-300"
+                                      : "bg-gray-50"
+                                } ${step.completed ? "opacity-60" : ""}`}
+                              >
+                                <div className="flex items-start gap-2">
+                                  <div className={`mt-1 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-xs ${
+                                    index === vehicle.currentStepIndex
+                                      ? isDarkMode
+                                        ? "bg-blue-500 text-white"
+                                        : "bg-blue-500 text-white"
+                                      : step.completed
+                                        ? isDarkMode
+                                          ? "bg-gray-600 text-gray-300"
+                                          : "bg-gray-400 text-white"
+                                        : isDarkMode
+                                          ? "bg-gray-600 text-gray-300" 
+                                          : "bg-gray-300 text-gray-700"
+                                  }`}>
+                                    {step.completed ? "✓" : index + 1}
+                                  </div>
+                                  <div className="flex-1 text-sm">
+                                    <span className={`${step.completed ? "line-through" : ""}`}>{step.instruction}</span>
+                                    {step.distance && (
+                                      <span className={`text-xs block ${isDarkMode ? "text-gray-400" : "text-gray-500"}`}>
+                                        {step.distance}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* No active routes message */}
+                {(!routeInfo?.steps || routeInfo.steps.length === 0 || hasReachedDestination || showReachedMessage) && 
+                 additionalVehicles.length === 0 && (
+                  <div className="p-4 text-center">
+                    <span className={isDarkMode ? "text-gray-400" : "text-gray-500"}>
+                      No active navigation routes
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -1308,20 +1492,6 @@ export default function Home() {
               )}
             </div>
           )}
-
-          {/* Map control toggle button */}
-          {(isSimulationRunning || additionalVehicles.length > 0) && (
-            <button
-              onClick={toggleMapViewFreeze}
-              className={`absolute right-4 bottom-20 z-20 px-3 py-2 rounded-md shadow-lg text-sm ${
-                isDarkMode 
-                  ? isMapViewFreezed ? 'bg-blue-800 text-white' : 'bg-gray-700 text-white'
-                  : isMapViewFreezed ? 'bg-blue-100 text-blue-800' : 'bg-white text-gray-800'
-              }`}
-            >
-              {isMapViewFreezed ? 'Free Map Movement' : 'Lock Map View'}
-            </button>
-          )}
         </div>
       </div>
       
@@ -1331,6 +1501,20 @@ export default function Home() {
         onClose={() => setIsAddVehicleModalOpen(false)}
         onAddVehicle={handleAddVehicle}
       />
+
+      {/* Map control toggle button */}
+      {(isSimulationRunning || additionalVehicles.length > 0) && (
+        <button
+          onClick={toggleMapViewFreeze}
+          className={`absolute right-4 bottom-20 z-20 px-3 py-2 rounded-md shadow-lg text-sm ${
+            isDarkMode 
+              ? isMapViewFreezed ? 'bg-blue-800 text-white' : 'bg-gray-700 text-white'
+              : isMapViewFreezed ? 'bg-blue-100 text-blue-800' : 'bg-white text-gray-800'
+          }`}
+        >
+          {isMapViewFreezed ? 'Free Map Movement' : 'Lock Map View'}
+        </button>
+      )}
     </main>
   )
 }
