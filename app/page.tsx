@@ -29,15 +29,36 @@ export default function Home() {
     cycleTime: number;
   }>>([]);
   
+  // Add routeInfo state
+  const [routeInfo, setRouteInfo] = useState<{
+    steps: Array<{
+      instruction: string;
+      distance: string;
+      maneuver?: string;
+      completed: boolean;
+    }>;
+    currentStepIndex: number;
+    normalEstimatedTime: number | null;
+    optimizedEstimatedTime: number | null;
+    hasReachedDestination: boolean;
+  }>({
+    steps: [],
+    currentStepIndex: 0,
+    normalEstimatedTime: null,
+    optimizedEstimatedTime: null,
+    hasReachedDestination: false
+  });
+  
   const routePointsRef = useRef<google.maps.LatLngLiteral[]>([]);
   const vehiclePositionRef = useRef<google.maps.LatLngLiteral | null>(null);
+  // Track passed traffic lights to avoid playing sound multiple times
+  const passedTrafficLightsRef = useRef<Set<string>>(new Set());
 
   const {
     vehicles,
     directions,
     alerts,
     currentDestination,
-    routeInfo,
     startSimulation,
     resetSimulation,
     addAmbulance,
@@ -55,6 +76,31 @@ export default function Home() {
   const [optimizedEstimatedTime, setOptimizedEstimatedTime] = useState<number | null>(null);
   const [hasReachedDestination, setHasReachedDestination] = useState(false);
   const [showReachedMessage, setShowReachedMessage] = useState(false);
+
+  // Audio element for bell sound
+  useEffect(() => {
+    // Create audio element for bell sound
+    const audio = new Audio('/bell-sound.mp3');
+    // Make it available globally
+    (window as any).bellSound = audio;
+    
+    return () => {
+      // Clean up
+      delete (window as any).bellSound;
+    };
+  }, []);
+
+  // Function to play bell sound
+  const playBellSound = () => {
+    try {
+      // Create a new audio instance each time to allow overlapping sounds
+      const audio = new Audio('https://www.soundjay.com/misc/sounds/bell-ringing-01.mp3');
+      audio.volume = 0.5; // Set volume to 50%
+      audio.play().catch(err => console.error("Error playing sound:", err));
+    } catch (err) {
+      console.error("Error setting up sound:", err);
+    }
+  };
 
   // Listen for window.startLocation - but only the initial value, not map clicks
   useEffect(() => {
@@ -225,6 +271,9 @@ export default function Home() {
       clearInterval(animationInterval);
     }
     
+    // Reset passed traffic lights
+    passedTrafficLightsRef.current = new Set();
+    
     // Create a simple route if we don't have one
     if (routePointsRef.current.length < 2) {
       // Create a more detailed straight-line route with 50 points
@@ -331,35 +380,36 @@ export default function Home() {
         remainingTime
       }));
       
-      // Update direction steps based on progress
+      // Update direction steps based on progress - improved logic
       if (directionSteps.length > 0) {
-        // Calculate which step we're on based on progress
+        // Calculate which step we're on based on progress with better precision
         const stepIndex = Math.min(
           Math.floor(progress * directionSteps.length),
           directionSteps.length - 1
         );
         
-        // Only update if the step has changed
-        if (stepIndex !== currentStepIndex) {
+        // Only update if the step has changed or we need to force an update
+        if (stepIndex !== currentStepIndex || currentStep % 10 === 0) {
+          console.log(`Updating to navigation step ${stepIndex}`);
+          // Update the current step index
           setCurrentStepIndex(stepIndex);
           
-          // Speak the new instruction
-          speakInstruction(directionSteps[stepIndex].instruction);
-          
           // Mark previous steps as completed
-          setDirectionSteps(prev => 
-            prev.map((step, index) => ({
-              ...step,
-              completed: index < stepIndex
-            }))
-          );
+          const updatedSteps = directionSteps.map((step, index) => ({
+            ...step,
+            completed: index < stepIndex
+          }));
+          
+          setDirectionSteps(updatedSteps);
           
           // Update route info for the control panel
-          setRouteInfo(prev => ({
-            ...prev,
-            steps: directionSteps,
-            currentStepIndex: stepIndex
-          }));
+          setRouteInfo({
+            steps: updatedSteps,
+            currentStepIndex: stepIndex,
+            normalEstimatedTime,
+            optimizedEstimatedTime,
+            hasReachedDestination: false
+          });
         }
       }
       
@@ -391,6 +441,24 @@ export default function Home() {
         
         // Update the vehicle position reference for traffic lights
         vehiclePositionRef.current = newPosition;
+        
+        // Check for traffic lights that were passed
+        trafficLights.forEach(light => {
+          // If we haven't passed this light yet
+          if (!passedTrafficLightsRef.current.has(light.id)) {
+            // Calculate distance to the traffic light
+            const distanceToLight = calculateDistance(newPosition, light.position);
+            
+            // If we're very close to the traffic light (within 50 meters)
+            if (distanceToLight < 0.05) {
+              console.log(`Passing traffic light ${light.id}`);
+              // Play bell sound
+              playBellSound();
+              // Mark this light as passed
+              passedTrafficLightsRef.current.add(light.id);
+            }
+          }
+        });
         
         // Update traffic lights based on new vehicle position
         updateTrafficLights();
@@ -431,6 +499,8 @@ export default function Home() {
           clearInterval(interval);
           setAnimationInterval(null);
           console.log("Simulation stopped after 5 seconds delay");
+          // Properly stop simulation
+          setIsSimulationRunning(false);
         }, 5000);
       }
     }, updateIntervalMs);
@@ -527,10 +597,8 @@ export default function Home() {
               setNormalEstimatedTime(times.normal);
               setOptimizedEstimatedTime(times.optimized);
               
-              // Speak the first instruction if available
-              if (steps.length > 0) {
-                speakInstruction("Starting route guidance. " + steps[0].instruction);
-              }
+              // Speak ONLY the starting announcement, not the first instruction
+              speakInstruction("Starting emergency route guidance.");
               
               // Start the animation
               animateMarkerAlongRoute(start, destination);
@@ -696,13 +764,7 @@ export default function Home() {
           ambulanceCount={vehicles.length}
           isDarkMode={isDarkMode}
           onToggleDarkMode={toggleDarkMode}
-          routeInfo={{
-            steps: directionSteps,
-            currentStepIndex,
-            normalEstimatedTime,
-            optimizedEstimatedTime,
-            hasReachedDestination
-          }}
+          routeInfo={routeInfo}
         />
         <div className="relative flex-1">
           <MapContainer isDarkMode={isDarkMode}>
